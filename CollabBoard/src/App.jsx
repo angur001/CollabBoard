@@ -177,6 +177,7 @@ function App() {
     // Handle remote user undoing a drawing
     socketManager.onUndo((data) => {
       const { id } = data
+      
       drawingManager.current.deleteDrawingRecord(id)
       redrawCanvas()
     })
@@ -258,7 +259,6 @@ function App() {
   const stopDrawing = () => {
     if (isDrawing && currentDrawingRecordId.current) {
       socketManager.emitDrawingEnd(currentDrawingRecordId.current)
-      // Add to history for undo/redo (only local user's drawings)
       drawingManager.current.AddDrawingRecordToHistory(currentDrawingRecordId.current)
       updateUndoRedoState()
     }
@@ -272,50 +272,55 @@ function App() {
     setCanRedo(drawingManager.current.canRedo())
   }
 
-  const handleUndo = () => {
-    const undoneRecord = drawingManager.current.UndoLastDrawingRecord()
-    if (undoneRecord) {
-      socketManager.emitUndo(undoneRecord.id)
-    }
-    updateUndoRedoState()
-    redrawCanvas()
+const handleUndo = useCallback(() => {
+  const undoneRecord = drawingManager.current.UndoLastDrawingRecord();
+  if (undoneRecord) {
+    socketManager.emitUndo(undoneRecord.id);
   }
+  updateUndoRedoState();
+  redrawCanvas();
+}, []);
 
-  const handleRedo = () => {
-    const redoneRecord = drawingManager.current.RedoLastDrawingRecord()
-    if (redoneRecord) {
-      socketManager.emitRedo(
-        redoneRecord.id,
-        redoneRecord.type,
-        redoneRecord.color,
-        redoneRecord.size,
-        redoneRecord.points
-      )
-    }
-    updateUndoRedoState()
-    redrawCanvas()
+const handleRedo = useCallback(() => {
+  const redoneRecord = drawingManager.current.RedoLastDrawingRecord();
+  if (redoneRecord) {
+    socketManager.emitRedo(
+      redoneRecord.id,
+      redoneRecord.type,
+      redoneRecord.color,
+      redoneRecord.size,
+      redoneRecord.points
+    );
   }
+  updateUndoRedoState();
+  redrawCanvas();
+}, []);
 
-  // Keyboard shortcuts for undo/redo
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
-        e.preventDefault()
-        if (drawingManager.current.canUndo()) {
-          handleUndo()
-        }
-      }
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
-        e.preventDefault()
-        if (drawingManager.current.canRedo()) {
-          handleRedo()
-        }
-      }
+const latestHandlers = useRef({ handleUndo, handleRedo });
+
+useEffect(() => {
+  latestHandlers.current = { handleUndo, handleRedo };
+});
+
+useEffect(() => {
+  const handleKeyDown = (e) => {
+    const { handleUndo, handleRedo } = latestHandlers.current;
+    const isMod = e.ctrlKey || e.metaKey;
+
+    if (isMod && e.key === 'z' && !e.shiftKey) {
+      e.preventDefault();
+      if (drawingManager.current.canUndo()) handleUndo();
     }
+    
+    if (isMod && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+      e.preventDefault();
+      if (drawingManager.current.canRedo()) handleRedo();
+    }
+  };
 
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [redrawCanvas])
+  window.addEventListener('keydown', handleKeyDown);
+  return () => window.removeEventListener('keydown', handleKeyDown);
+}, []);
 
   const clearCanvas = () => {
     const canvas = canvasRef.current
