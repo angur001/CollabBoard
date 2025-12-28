@@ -1,6 +1,7 @@
-import { useRef, useState, useEffect } from 'react'
+import { useRef, useState, useEffect, useCallback } from 'react'
 import './index.css'
 import DrawingManager from './drawingManager'
+import socketManager from './socketManager'
 
 const COLORS = [
   { name: 'Black', value: '#1a1a2e' },
@@ -21,15 +22,22 @@ function App() {
   const lastPointRef = useRef(null)
   const drawingManager = useRef(null)
   const currentDrawingRecordId = useRef(null)
-
+  // Track last points for remote drawings
+  const remoteLastPoints = useRef({})
+  // Track active remote drawers with their name and position
+  const [activeDrawers, setActiveDrawers] = useState({})
+  // Track undo/redo availability for UI state
+  const [canUndo, setCanUndo] = useState(false)
+  const [canRedo, setCanRedo] = useState(false)
 
   if (drawingManager.current === null) {
     drawingManager.current = new DrawingManager()
   }
 
   // Redraw all strokes from the drawing manager
-  const redrawCanvas = () => {
+  const redrawCanvas = useCallback(() => {
     const canvas = canvasRef.current
+    if (!canvas) return
     const ctx = canvas.getContext('2d')
     
     // Clear the canvas first
@@ -55,13 +63,29 @@ function App() {
         ctx.stroke()
       }
     }
-  }
+  }, [])
+
+  // Used for drawing remote changes in real time
+  const drawLineSegment = useCallback((fromPoint, toPoint, color, size) => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    
+    ctx.strokeStyle = color
+    ctx.lineWidth = size
+    ctx.lineCap = 'round'
+    ctx.lineJoin = 'round'
+    
+    ctx.beginPath()
+    ctx.moveTo(fromPoint.x, fromPoint.y)
+    ctx.lineTo(toPoint.x, toPoint.y)
+    ctx.stroke()
+  }, [])
 
   useEffect(() => {
     const canvas = canvasRef.current
     const ctx = canvas.getContext('2d')
     
-    // Set canvas size to fill the drawing area
     const resizeCanvas = () => {
       const rect = canvas.parentElement.getBoundingClientRect()
       canvas.width = rect.width
@@ -78,7 +102,96 @@ function App() {
     window.addEventListener('resize', resizeCanvas)
     
     return () => window.removeEventListener('resize', resizeCanvas)
-  }, [])
+  }, [redrawCanvas])
+
+  // Socket connection and event handlers
+  useEffect(() => {
+    socketManager.connect()
+
+    // Sync existing drawings when joining
+    socketManager.onSyncDrawings((records) => {
+      for (const id in records) {
+        const record = records[id]
+        drawingManager.current.CreateNewDrawingRecord(id, record.type, record.color, record.size)
+        record.points.forEach(point => {
+          drawingManager.current.AddPointToRecord(id, point)
+        })
+      }
+      redrawCanvas()
+    })
+
+    // Handle remote user starting a drawing
+    socketManager.onDrawingStart((data) => {
+      const { id, type, color, size, userName } = data
+      drawingManager.current.CreateNewDrawingRecord(id, type, color, size)
+      remoteLastPoints.current[id] = null
+      
+      // Add to active drawers
+      setActiveDrawers(prev => ({
+        ...prev,
+        [id]: { userName, position: null, color }
+      }))
+    })
+
+    // Handle remote user drawing points
+    socketManager.onDrawingPoint((data) => {
+      const { id, point, userName } = data
+      const record = drawingManager.current.getDrawingRecord(id)
+      if (record) {
+        drawingManager.current.AddPointToRecord(id, point)
+        
+        // Draw the line segment in real-time
+        const lastPoint = remoteLastPoints.current[id]
+        if (lastPoint) {
+          drawLineSegment(lastPoint, point, record.color, record.size)
+        }
+        remoteLastPoints.current[id] = point
+        
+        // Update drawer position
+        setActiveDrawers(prev => ({
+          ...prev,
+          [id]: { userName, position: point, color: record.color }
+        }))
+      }
+    })
+
+    // Handle remote user finishing drawing
+    socketManager.onDrawingEnd((data) => {
+      delete remoteLastPoints.current[data.id]
+      
+      // Remove from active drawers
+      setActiveDrawers(prev => {
+        const updated = { ...prev }
+        delete updated[data.id]
+        return updated
+      })
+    })
+
+    // Handle remote user clearing canvas
+    socketManager.onClearCanvas(() => {
+      drawingManager.current.clearDrawingRecords()
+      updateUndoRedoState()
+      redrawCanvas()
+    })
+
+    // Handle remote user undoing a drawing
+    socketManager.onUndo((data) => {
+      const { id } = data
+      drawingManager.current.deleteDrawingRecord(id)
+      redrawCanvas()
+    })
+
+    // Handle remote user redoing a drawing
+    socketManager.onRedo((data) => {
+      const { id, type, color, size, points } = data
+      drawingManager.current.createDrawingRecordWithPoints(id, type, color, size, points)
+      redrawCanvas()
+    })
+
+    return () => {
+      socketManager.disconnect()
+    }
+  }, [redrawCanvas, drawLineSegment])
 
   const getCoordinates = (e) => {
     const canvas = canvasRef.current
@@ -111,6 +224,9 @@ function App() {
     )
     drawingManager.current.AddPointToRecord(currentDrawingRecordId.current, coords)
 
+    socketManager.emitDrawingStart(currentDrawingRecordId.current, 'stroke', currentColor, lineWidth)
+    socketManager.emitDrawingPoint(currentDrawingRecordId.current, coords)
+
     setIsDrawing(true)
   }
 
@@ -134,20 +250,81 @@ function App() {
 
     drawingManager.current.AddPointToRecord(currentDrawingRecordId.current, coords)
     
+    socketManager.emitDrawingPoint(currentDrawingRecordId.current, coords)
+    
     lastPointRef.current = coords
   }
 
   const stopDrawing = () => {
+    if (isDrawing && currentDrawingRecordId.current) {
+      socketManager.emitDrawingEnd(currentDrawingRecordId.current)
+      // Add to history for undo/redo (only local user's drawings)
+      drawingManager.current.AddDrawingRecordToHistory(currentDrawingRecordId.current)
+      updateUndoRedoState()
+    }
     console.log(drawingManager.current.getDrawingRecords())
     setIsDrawing(false)
     lastPointRef.current = null
   }
+
+  const updateUndoRedoState = () => {
+    setCanUndo(drawingManager.current.canUndo())
+    setCanRedo(drawingManager.current.canRedo())
+  }
+
+  const handleUndo = () => {
+    const undoneRecord = drawingManager.current.UndoLastDrawingRecord()
+    if (undoneRecord) {
+      socketManager.emitUndo(undoneRecord.id)
+    }
+    updateUndoRedoState()
+    redrawCanvas()
+  }
+
+  const handleRedo = () => {
+    const redoneRecord = drawingManager.current.RedoLastDrawingRecord()
+    if (redoneRecord) {
+      socketManager.emitRedo(
+        redoneRecord.id,
+        redoneRecord.type,
+        redoneRecord.color,
+        redoneRecord.size,
+        redoneRecord.points
+      )
+    }
+    updateUndoRedoState()
+    redrawCanvas()
+  }
+
+  // Keyboard shortcuts for undo/redo
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault()
+        if (drawingManager.current.canUndo()) {
+          handleUndo()
+        }
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+        e.preventDefault()
+        if (drawingManager.current.canRedo()) {
+          handleRedo()
+        }
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [redrawCanvas])
 
   const clearCanvas = () => {
     const canvas = canvasRef.current
     const ctx = canvas.getContext('2d')
     ctx.clearRect(0, 0, canvas.width, canvas.height)
     drawingManager.current.clearDrawingRecords()
+    updateUndoRedoState()
+    
+    socketManager.emitClearCanvas()
   }
 
   return (
@@ -180,6 +357,25 @@ function App() {
           />
         </div>
         
+        <div className="toolbar-section">
+          <button 
+            className="action-btn" 
+            onClick={handleUndo}
+            disabled={!canUndo}
+            title="Undo (Ctrl+Z)"
+          >
+            ↶ Undo
+          </button>
+          <button 
+            className="action-btn" 
+            onClick={handleRedo}
+            disabled={!canRedo}
+            title="Redo (Ctrl+Y)"
+          >
+            ↷ Redo
+          </button>
+        </div>
+        
         <button className="clear-btn" onClick={clearCanvas}>
           Clear Canvas
         </button>
@@ -196,6 +392,22 @@ function App() {
           onTouchMove={draw}
           onTouchEnd={stopDrawing}
         />
+        
+        {Object.entries(activeDrawers).map(([id, drawer]) => 
+          drawer.position && (
+            <div
+              key={id}
+              className="drawer-label"
+              style={{
+                left: drawer.position.x + 10,
+                top: drawer.position.y - 25,
+                backgroundColor: drawer.color,
+              }}
+            >
+              {drawer.userName}
+            </div>
+          )
+        )}
       </div>
     </div>
   )

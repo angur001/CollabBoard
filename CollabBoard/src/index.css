@@ -110,6 +110,32 @@ html, body, #root {
   border: none;
 }
 
+.action-btn {
+  padding: 0.5rem 0.9rem;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 0.75rem;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.action-btn:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg-dark);
+}
+
+.action-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .clear-btn {
   padding: 0.6rem 1.2rem;
   background: transparent;
@@ -143,4 +169,20 @@ canvas {
   cursor: crosshair;
   /* Do NOT set width/height in CSS - it stretches the bitmap and causes offset issues */
   /* The canvas size is set via JavaScript attributes in App.jsx */
+}
+
+.drawer-label {
+  position: absolute;
+  padding: 4px 8px;
+  border-radius: 4px;
+  color: white;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 10;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  animation: fadeIn 0.15s ease-out;
 }
