@@ -29,6 +29,8 @@ function App() {
   // Track undo/redo availability for UI state
   const [canUndo, setCanUndo] = useState(false)
   const [canRedo, setCanRedo] = useState(false)
+  // Track connection status
+  const [isConnected, setIsConnected] = useState(false)
 
   if (drawingManager.current === null) {
     drawingManager.current = new DrawingManager()
@@ -108,6 +110,10 @@ function App() {
   useEffect(() => {
     socketManager.connect()
 
+    // set connect and disconnet callbacks
+    socketManager.onConnect(() => setIsConnected(true))
+    socketManager.onDisconnect(() => setIsConnected(false))
+
     // Sync existing drawings when joining
     socketManager.onSyncDrawings((records) => {
       for (const id in records) {
@@ -176,6 +182,7 @@ function App() {
 
     // Handle remote user undoing a drawing
     socketManager.onUndo((data) => {
+      if (!data.id) return;
       const { id } = data
       
       drawingManager.current.deleteDrawingRecord(id)
@@ -384,6 +391,11 @@ useEffect(() => {
         <button className="clear-btn" onClick={clearCanvas}>
           Clear Canvas
         </button>
+        
+        <div className={`connection-status ${isConnected ? 'connected' : 'disconnected'}`}>
+          <span className="status-dot"></span>
+          <span className="status-text">{isConnected ? 'Connected' : 'Disconnected'}</span>
+        </div>
       </div>
       
       <div className="canvas-container">

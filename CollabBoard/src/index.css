@@ -186,3 +186,60 @@ canvas {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
   animation: fadeIn 0.15s ease-out;
 }
+
+.connection-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.8rem;
+  border-radius: 20px;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  transition: all 0.3s ease;
+}
+
+.connection-status.connected {
+  background: rgba(46, 160, 67, 0.15);
+  border: 1px solid rgba(46, 160, 67, 0.4);
+  color: #3fb950;
+}
+
+.connection-status.disconnected {
+  background: rgba(218, 54, 51, 0.15);
+  border: 1px solid rgba(218, 54, 51, 0.4);
+  color: #f85149;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.connection-status.connected .status-dot {
+  background: #3fb950;
+  box-shadow: 0 0 6px rgba(46, 160, 67, 0.6);
+}
+
+.connection-status.disconnected .status-dot {
+  background: #f85149;
+  box-shadow: 0 0 6px rgba(218, 54, 51, 0.6);
+  animation: none;
+}
+
+.status-text {
+  font-weight: 600;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.6;
+    transform: scale(0.9);
+  }
+}

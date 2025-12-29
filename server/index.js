@@ -37,6 +37,12 @@ io.on('connection', (socket) => {
 
   // User is drawing (adding points)
   socket.on('drawing-point', (data) => {
+    if (!data.id || typeof data.point?.x !== 'number' || typeof data.point?.y !== 'number') {
+      return
+    }
+    if (allDrawingRecords[data.id]?.points.length > 10000) {
+      return
+    }
     const { id, point } = data
     if (allDrawingRecords[id]) {
       allDrawingRecords[id].points.push(point)

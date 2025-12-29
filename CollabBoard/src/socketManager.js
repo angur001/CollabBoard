@@ -10,13 +10,31 @@ class SocketManager {
 
     this.socket.on('connect', () => {
       console.log('Connected to server:', this.socket.id)
+      if (this.onConnectCallback) this.onConnectCallback()
     })
 
     this.socket.on('disconnect', () => {
       console.log('Disconnected from server')
+      if (this.onDisconnectCallback) this.onDisconnectCallback()
     })
 
     return this.socket
+  }
+
+  onConnect(callback) {
+    this.onConnectCallback = callback
+    // If already connected, call immediately
+    if (this.socket?.connected) {
+      callback()
+    }
+  }
+
+  onDisconnect(callback) {
+    this.onDisconnectCallback = callback
+  }
+
+  isConnected() {
+    return this.socket?.connected ?? false
   }
 
   // Emit when user starts a new stroke

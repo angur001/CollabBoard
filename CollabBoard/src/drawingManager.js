@@ -58,7 +58,7 @@ class DrawingManager {
             };
             this.undoneDrawingRecordsHistory.push(record);
             delete this.drawingRecords[id];
-            return record; // Return the undone record for socket emit
+            return record;
         }
         return null;
     }
