@@ -38,14 +38,14 @@ io.on('connection', (socket) => {
     if (!data.id || typeof data.point?.x !== 'number' || typeof data.point?.y !== 'number') {
       return
     }
-    if (allDrawingRecords[data.id]?.points.length > 10000) {
+    if (rooms[data.roomId].allDrawingRecords[data.id]?.points.length > 10000) {
       return
     }
     const { id, point, roomId } = data
-    if (rooms[roomId].allDrawingRecords[id]) {
-      rooms[roomId].allDrawingRecords[id].points.push(point)
+    if (rooms[data.roomId].allDrawingRecords[id]) {
+      rooms[data.roomId].allDrawingRecords[id].points.push(point)
     }
-    socket.to(roomId).emit('drawing-point', { ...data, userName: rooms[roomId].userNames[socket.id] })
+    socket.to(data.roomId).emit('drawing-point', { ...data, userName: rooms[data.roomId].userNames[socket.id] })
   })
 
   // User finished drawing a stroke
@@ -82,20 +82,14 @@ io.on('connection', (socket) => {
   socket.on('join-room', (data) => {
     const { roomId } = data
     if (!rooms[roomId]) {
-      console.log(`Room ${roomId} not found`)
-      return
+      rooms[roomId] = { allDrawingRecords: {}, userNames: {} }
+      console.log(`Room ${roomId} created`)
     }
     socket.join(roomId)
+    console.log(`User ${socket.id} joined room ${roomId}`)
     const name = randomNameGenerator()
     rooms[roomId].userNames[socket.id] = name
     socket.emit('sync-drawings', rooms[roomId].allDrawingRecords)
-  })
-
-  socket.on('create-room', () => {
-    const roomId = crypto.randomUUID()
-    rooms[roomId] = { allDrawingRecords: {}, userNames: {} }
-    socket.join(roomId)
-    socket.emit('room-created', roomId)
   })
 
   socket.on('leave-room', (data) => {
@@ -105,6 +99,7 @@ io.on('connection', (socket) => {
       return
     }
     socket.leave(roomId)
+    console.log(`User ${socket.id} left room ${roomId}`)
     delete rooms[roomId].userNames[socket.id]
   })
 

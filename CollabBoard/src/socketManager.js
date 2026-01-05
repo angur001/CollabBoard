@@ -32,12 +32,6 @@ class SocketManager {
     }
   }
 
-  emitCreateRoom() {
-    if (this.socket) {
-      this.socket.emit('create-room')
-    }
-  }
-
   emitLeaveRoom(roomId) {
     if (this.socket) {
       this.socket.emit('leave-room', { roomId })
@@ -152,6 +146,7 @@ class SocketManager {
       this.socket = null
     }
   }
+  
 }
 
 export default new SocketManager()

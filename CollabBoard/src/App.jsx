@@ -31,6 +31,8 @@ function App() {
   const [canRedo, setCanRedo] = useState(false)
   // Track connection status
   const [isConnected, setIsConnected] = useState(false)
+  const [roomId, setRoomId] = useState(null)
+  const [roomInput, setRoomInput] = useState('')
 
   if (drawingManager.current === null) {
     drawingManager.current = new DrawingManager()
@@ -85,6 +87,7 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if (!roomId) return
     const canvas = canvasRef.current
     const ctx = canvas.getContext('2d')
     
@@ -108,14 +111,20 @@ function App() {
 
   // Socket connection and event handlers
   useEffect(() => {
+    if (!roomId) return
+
     socketManager.connect()
 
     // set connect and disconnet callbacks
-    socketManager.onConnect(() => setIsConnected(true))
+    socketManager.onConnect(() => {
+      setIsConnected(true)
+      socketManager.emitJoinRoom(roomId)
+    })
     socketManager.onDisconnect(() => setIsConnected(false))
 
     // Sync existing drawings when joining
     socketManager.onSyncDrawings((records) => {
+      drawingManager.current.clearDrawingRecords()
       for (const id in records) {
         const record = records[id]
         drawingManager.current.CreateNewDrawingRecord(id, record.type, record.color, record.size)
@@ -197,9 +206,12 @@ function App() {
     })
 
     return () => {
-      socketManager.disconnect()
+      if (roomId) {
+        socketManager.disconnect()
+        socketManager.emitLeaveRoom(roomId)
+      }
     }
-  }, [redrawCanvas, drawLineSegment])
+  }, [redrawCanvas, drawLineSegment, roomId])
 
   const getCoordinates = (e) => {
     const canvas = canvasRef.current
@@ -232,8 +244,8 @@ function App() {
     )
     drawingManager.current.AddPointToRecord(currentDrawingRecordId.current, coords)
 
-    socketManager.emitDrawingStart(currentDrawingRecordId.current, 'stroke', currentColor, lineWidth)
-    socketManager.emitDrawingPoint(currentDrawingRecordId.current, coords)
+    socketManager.emitDrawingStart(currentDrawingRecordId.current, 'stroke', currentColor, lineWidth, roomId)
+    socketManager.emitDrawingPoint(currentDrawingRecordId.current, coords, roomId)
 
     setIsDrawing(true)
   }
@@ -258,14 +270,14 @@ function App() {
 
     drawingManager.current.AddPointToRecord(currentDrawingRecordId.current, coords)
     
-    socketManager.emitDrawingPoint(currentDrawingRecordId.current, coords)
+    socketManager.emitDrawingPoint(currentDrawingRecordId.current, coords, roomId)
     
     lastPointRef.current = coords
   }
 
   const stopDrawing = () => {
     if (isDrawing && currentDrawingRecordId.current) {
-      socketManager.emitDrawingEnd(currentDrawingRecordId.current)
+      socketManager.emitDrawingEnd(currentDrawingRecordId.current, roomId)
       drawingManager.current.AddDrawingRecordToHistory(currentDrawingRecordId.current)
       updateUndoRedoState()
     }
@@ -282,11 +294,11 @@ function App() {
 const handleUndo = useCallback(() => {
   const undoneRecord = drawingManager.current.UndoLastDrawingRecord();
   if (undoneRecord) {
-    socketManager.emitUndo(undoneRecord.id);
+    socketManager.emitUndo(undoneRecord.id, roomId);
   }
   updateUndoRedoState();
   redrawCanvas();
-}, []);
+}, [roomId, redrawCanvas]);
 
 const handleRedo = useCallback(() => {
   const redoneRecord = drawingManager.current.RedoLastDrawingRecord();
@@ -296,12 +308,13 @@ const handleRedo = useCallback(() => {
       redoneRecord.type,
       redoneRecord.color,
       redoneRecord.size,
-      redoneRecord.points
+      redoneRecord.points,
+      roomId
     );
   }
   updateUndoRedoState();
   redrawCanvas();
-}, []);
+}, [roomId, redrawCanvas]);
 
 const latestHandlers = useRef({ handleUndo, handleRedo });
 
@@ -336,12 +349,77 @@ useEffect(() => {
     drawingManager.current.clearDrawingRecords()
     updateUndoRedoState()
     
-    socketManager.emitClearCanvas()
+    socketManager.emitClearCanvas(roomId)
+  }
+
+  const handleJoinRoom = (e) => {
+    // add some sort of validation to check if the room id is already in use
+    e.preventDefault()
+    const trimmedInput = roomInput.trim()
+    if (trimmedInput) {
+      if (trimmedInput.length < 3) {
+        alert('Room ID must be at least 3 characters long')
+        return
+      } else if (trimmedInput.length > 10) {
+        alert('Room ID must be less than 10 characters long')
+        return
+      } else if (!/^[a-zA-Z0-9]+$/.test(trimmedInput)) {
+        alert('Room ID must contain only letters and numbers')
+        return
+      }
+      setRoomId(roomInput.trim())
+      socketManager.emitJoinRoom(trimmedInput)
+    }
+  }
+
+  const handleLeaveRoom = () => {
+    setRoomId(null)
+    drawingManager.current.clearDrawingRecords()
+    updateUndoRedoState()
+    redrawCanvas()
+  }
+
+  if (!roomId) {
+    return (
+      <div className="landing-page">
+        <div className="landing-card">
+          <div className="landing-header">
+            <h1>CollabBoard</h1>
+            <p>Real-time collaborative drawing for teams</p>
+          </div>
+          <form className="join-form" onSubmit={handleJoinRoom}>
+            <input
+              type="text"
+              placeholder="Enter Room Name..."
+              value={roomInput}
+              onChange={(e) => setRoomInput(e.target.value)}
+              autoFocus
+            />
+            <button type="submit" disabled={!roomInput.trim()}>
+              Join Board
+            </button>
+          </form>
+          <div className="landing-footer">
+            <span>Create a new room or join an existing one by entering the same name.</span>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (
     <div className="app">
       <div className="toolbar">
+        <div className="toolbar-section">
+          <button className="action-btn back-btn" onClick={handleLeaveRoom}>
+            ← Exit
+          </button>
+          <div className="room-info">
+            <span className="toolbar-label">Room</span>
+            <span className="room-name">{roomId}</span>
+          </div>
+        </div>
+
         <div className="toolbar-section">
           <span className="toolbar-label">Colors</span>
           <div className="color-picker">
