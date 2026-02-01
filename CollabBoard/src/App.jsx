@@ -33,6 +33,13 @@ function App() {
   const [isConnected, setIsConnected] = useState(false)
   const [roomId, setRoomId] = useState(null)
   const [roomInput, setRoomInput] = useState('')
+  // Zoom and pan state
+  const [zoom, setZoom] = useState(1.0)
+  const [panX, setPanX] = useState(0)
+  const [panY, setPanY] = useState(0)
+  const [isPanning, setIsPanning] = useState(false)
+  const [isSpacePressed, setIsSpacePressed] = useState(false)
+  const panStartRef = useRef(null)
 
   if (drawingManager.current === null) {
     drawingManager.current = new DrawingManager()
@@ -43,9 +50,17 @@ function App() {
     const canvas = canvasRef.current
     if (!canvas) return
     const ctx = canvas.getContext('2d')
+    const container = canvas.parentElement;
+    const { width, height } = container.getBoundingClientRect();
+
     
     // Clear the canvas first
-    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    ctx.clearRect(0, 0, width, height)
+    
+    // Apply transformations
+    ctx.save()
+    ctx.translate(panX, panY)
+    ctx.scale(zoom, zoom)
     
     const records = drawingManager.current.getDrawingRecords()
     
@@ -67,13 +82,20 @@ function App() {
         ctx.stroke()
       }
     }
-  }, [])
+    
+    ctx.restore()
+  }, [zoom, panX, panY])
 
   // Used for drawing remote changes in real time
   const drawLineSegment = useCallback((fromPoint, toPoint, color, size) => {
     const canvas = canvasRef.current
     if (!canvas) return
     const ctx = canvas.getContext('2d')
+    
+    // Apply transformations
+    ctx.save()
+    ctx.translate(panX, panY)
+    ctx.scale(zoom, zoom)
     
     ctx.strokeStyle = color
     ctx.lineWidth = size
@@ -84,34 +106,48 @@ function App() {
     ctx.moveTo(fromPoint.x, fromPoint.y)
     ctx.lineTo(toPoint.x, toPoint.y)
     ctx.stroke()
-  }, [])
+    
+    ctx.restore()
+  }, [zoom, panX, panY])
 
+useEffect(() => {
+  if (!roomId) return;
+
+  const resizeCanvas = () => {
+    const canvas = canvasRef.current;
+    const container = canvas?.parentElement;
+    if (!canvas || !container) return;
+
+    const { width, height } = container.getBoundingClientRect();
+
+    // Check if we actually need to resize to avoid flickering
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+      
+      // Re-apply context settings lost on resize
+      const ctx = canvas.getContext('2d');
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      
+      // Trigger a redraw manually here
+      redrawCanvas();
+    }
+  };
+
+  // Initial call
+  resizeCanvas();
+
+  window.addEventListener('resize', resizeCanvas);
+  return () => window.removeEventListener('resize', resizeCanvas);
+}, [roomId, redrawCanvas]);
+
+  // Redraw canvas when zoom or pan changes
   useEffect(() => {
-    if (!roomId) return
-    const resizeCanvas = () => {
-      const canvas = canvasRef.current;
-      const container = canvas.parentElement;
-      if (!canvas || !container) return;
-    
-      const { width, height } = container.getBoundingClientRect();
-    
-      if (canvas.width !== width || canvas.height !== height) {
-        canvas.width = width;
-        canvas.height = height;
-        
-        const ctx = canvas.getContext('2d');
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        
-        redrawCanvas();
-      }
-    };
-    
-    resizeCanvas()
-    window.addEventListener('resize', resizeCanvas)
-    
-    return () => window.removeEventListener('resize', resizeCanvas)
-  }, [redrawCanvas])
+    if (roomId) {
+      redrawCanvas()
+    }
+  }, [zoom, panX, panY, roomId, redrawCanvas])
 
   // Socket connection and event handlers
   useEffect(() => {
@@ -221,21 +257,33 @@ function App() {
     const canvas = canvasRef.current
     const rect = canvas.getBoundingClientRect()
     
+    let screenX, screenY
     if (e.touches) {
-      return {
-        x: e.touches[0].clientX - rect.left,
-        y: e.touches[0].clientY - rect.top
-      }
+      screenX = e.touches[0].clientX - rect.left
+      screenY = e.touches[0].clientY - rect.top
+    } else {
+      screenX = e.clientX - rect.left
+      screenY = e.clientY - rect.top
     }
     
+    // Transform screen coordinates to canvas coordinates
+    const canvasX = (screenX - panX) / zoom
+    const canvasY = (screenY - panY) / zoom
+    
     return {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top
+      x: canvasX,
+      y: canvasY
     }
   }
 
   const startDrawing = (e) => {
     e.preventDefault()
+    
+    // Don't start drawing if space is pressed (pan mode)
+    if (isSpacePressed) {
+      return
+    }
+    
     currentDrawingRecordId.current = Date.now()
     const coords = getCoordinates(e)
     lastPointRef.current = coords
@@ -254,13 +302,70 @@ function App() {
     setIsDrawing(true)
   }
 
+  const startPanning = (e) => {
+    if (!isSpacePressed) return
+    
+    e.preventDefault()
+    const canvas = canvasRef.current
+    if (!canvas) return
+    
+    const rect = canvas.getBoundingClientRect()
+    panStartRef.current = {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+      panX: panX,
+      panY: panY
+    }
+    setIsPanning(true)
+  }
+
+  const handlePanMove = (e) => {
+    if (!isPanning || !panStartRef.current) return
+    
+    e.preventDefault()
+    const canvas = canvasRef.current
+    if (!canvas) return
+    
+    const rect = canvas.getBoundingClientRect()
+    const currentX = e.clientX - rect.left
+    const currentY = e.clientY - rect.top
+    
+    const deltaX = currentX - panStartRef.current.x
+    const deltaY = currentY - panStartRef.current.y
+    
+    setPanX(panStartRef.current.panX + deltaX)
+    setPanY(panStartRef.current.panY + deltaY)
+  }
+
+  const stopPanning = () => {
+    setIsPanning(false)
+    panStartRef.current = null
+  }
+
+  const handleMouseMove = (e) => {
+    // Handle panning if space is pressed and we're panning
+    if (isSpacePressed && isPanning) {
+      handlePanMove(e)
+      return
+    }
+    
+    // Handle drawing if we're drawing
+    if (isDrawing) {
+      draw(e)
+    }
+  }
+
   const draw = (e) => {
-    if (!isDrawing) return
     e.preventDefault()
     
     const canvas = canvasRef.current
     const ctx = canvas.getContext('2d')
     const coords = getCoordinates(e)
+    
+    // Apply transformations for drawing
+    ctx.save()
+    ctx.translate(panX, panY)
+    ctx.scale(zoom, zoom)
     
     ctx.strokeStyle = currentColor
     ctx.lineWidth = lineWidth
@@ -271,6 +376,8 @@ function App() {
     ctx.moveTo(lastPointRef.current.x, lastPointRef.current.y)
     ctx.lineTo(coords.x, coords.y)
     ctx.stroke()
+    
+    ctx.restore()
 
     drawingManager.current.AddPointToRecord(currentDrawingRecordId.current, coords)
     
@@ -279,7 +386,7 @@ function App() {
     lastPointRef.current = coords
   }
 
-  const stopDrawing = () => {
+  const stopDrawing = (e) => {
     if (isDrawing && currentDrawingRecordId.current) {
       socketManager.emitDrawingEnd(currentDrawingRecordId.current, roomId)
       drawingManager.current.AddDrawingRecordToHistory(currentDrawingRecordId.current)
@@ -288,6 +395,34 @@ function App() {
     console.log(drawingManager.current.getDrawingRecords())
     setIsDrawing(false)
     lastPointRef.current = null
+    
+    // Also stop panning
+    if (isPanning) {
+      stopPanning()
+    }
+  }
+
+  const handleWheel = (e) => {
+    e.preventDefault()
+    const canvas = canvasRef.current
+    if (!canvas) return
+    
+    const rect = canvas.getBoundingClientRect()
+    const mouseX = e.clientX - rect.left
+    const mouseY = e.clientY - rect.top
+    
+    // Calculate zoom delta
+    const zoomDelta = -e.deltaY * 0.001
+    const newZoom = Math.max(0.25, Math.min(4.0, zoom * Math.exp(zoomDelta)))
+    
+    // Calculate new pan to keep cursor position fixed
+    const zoomRatio = newZoom / zoom
+    const newPanX = mouseX - (mouseX - panX) * zoomRatio
+    const newPanY = mouseY - (mouseY - panY) * zoomRatio
+    
+    setZoom(newZoom)
+    setPanX(newPanX)
+    setPanY(newPanY)
   }
 
   const updateUndoRedoState = () => {
@@ -340,10 +475,28 @@ useEffect(() => {
       e.preventDefault();
       if (drawingManager.current.canRedo()) handleRedo();
     }
+    
+    // Handle space key for panning
+    if (e.key === ' ') {
+      e.preventDefault();
+      setIsSpacePressed(true);
+    }
+  };
+
+  const handleKeyUp = (e) => {
+    if (e.key === ' ') {
+      setIsSpacePressed(false);
+      setIsPanning(false);
+      panStartRef.current = null;
+    }
   };
 
   window.addEventListener('keydown', handleKeyDown);
-  return () => window.removeEventListener('keydown', handleKeyDown);
+  window.addEventListener('keyup', handleKeyUp);
+  return () => {
+    window.removeEventListener('keydown', handleKeyDown);
+    window.removeEventListener('keyup', handleKeyUp);
+  };
 }, []);
 
   const clearCanvas = () => {
@@ -483,13 +636,21 @@ useEffect(() => {
       <div className="canvas-container">
         <canvas
           ref={canvasRef}
-          onMouseDown={startDrawing}
-          onMouseMove={draw}
+          onMouseDown={(e) => {
+            if (isSpacePressed) {
+              startPanning(e)
+            } else {
+              startDrawing(e)
+            }
+          }}
+          onMouseMove={handleMouseMove}
           onMouseUp={stopDrawing}
           onMouseLeave={stopDrawing}
+          onWheel={handleWheel}
           onTouchStart={startDrawing}
           onTouchMove={draw}
           onTouchEnd={stopDrawing}
+          style={{ cursor: isSpacePressed ? (isPanning ? 'grabbing' : 'grab') : 'crosshair' }}
         />
         
         {Object.entries(activeDrawers).map(([id, drawer]) => 
@@ -498,8 +659,8 @@ useEffect(() => {
               key={id}
               className="drawer-label"
               style={{
-                left: drawer.position.x + 10,
-                top: drawer.position.y - 25,
+                left: drawer.position.x * zoom + panX + 10,
+                top: drawer.position.y * zoom + panY - 25,
                 backgroundColor: drawer.color,
               }}
             >

@@ -189,6 +189,14 @@ canvas {
   /* The canvas size is set via JavaScript attributes in App.jsx */
 }
 
+canvas.grab {
+  cursor: grab;
+}
+
+canvas.grabbing {
+  cursor: grabbing;
+}
+
 .drawer-label {
   position: absolute;
   padding: 4px 8px;
