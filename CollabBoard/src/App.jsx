@@ -88,20 +88,24 @@ function App() {
 
   useEffect(() => {
     if (!roomId) return
-    const canvas = canvasRef.current
-    const ctx = canvas.getContext('2d')
-    
     const resizeCanvas = () => {
-      const rect = canvas.parentElement.getBoundingClientRect()
-      canvas.width = rect.width
-      canvas.height = rect.height
-      
-      // Set default styles
-      ctx.lineCap = 'round'
-      ctx.lineJoin = 'round'
-      
-      redrawCanvas()
-    }
+      const canvas = canvasRef.current;
+      const container = canvas.parentElement;
+      if (!canvas || !container) return;
+    
+      const { width, height } = container.getBoundingClientRect();
+    
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+        
+        const ctx = canvas.getContext('2d');
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        
+        redrawCanvas();
+      }
+    };
     
     resizeCanvas()
     window.addEventListener('resize', resizeCanvas)

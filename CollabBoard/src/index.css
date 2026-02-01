@@ -184,6 +184,7 @@ html, body, #root {
 canvas {
   display: block;
   cursor: crosshair;
+  touch-action: none;
   /* Do NOT set width/height in CSS - it stretches the bitmap and causes offset issues */
   /* The canvas size is set via JavaScript attributes in App.jsx */
 }
