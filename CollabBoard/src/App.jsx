@@ -149,18 +149,30 @@ useEffect(() => {
     }
   }, [zoom, panX, panY, roomId, redrawCanvas])
 
-  // Socket connection and event handlers
+  // Socket connection setup
   useEffect(() => {
     if (!roomId) return
 
     socketManager.connect()
 
-    // set connect and disconnet callbacks
+    // set connect and disconnect callbacks
     socketManager.onConnect(() => {
       setIsConnected(true)
       socketManager.emitJoinRoom(roomId)
     })
     socketManager.onDisconnect(() => setIsConnected(false))
+
+    return () => {
+      if (roomId) {
+        socketManager.disconnect()
+        socketManager.emitLeaveRoom(roomId)
+      }
+    }
+  }, [roomId])
+
+  // Socket event handlers (depends on redrawCanvas and drawLineSegment)
+  useEffect(() => {
+    if (!roomId) return
 
     // Sync existing drawings when joining
     socketManager.onSyncDrawings((records) => {
@@ -244,13 +256,6 @@ useEffect(() => {
       drawingManager.current.createDrawingRecordWithPoints(id, type, color, size, points)
       redrawCanvas()
     })
-
-    return () => {
-      if (roomId) {
-        socketManager.disconnect()
-        socketManager.emitLeaveRoom(roomId)
-      }
-    }
   }, [redrawCanvas, drawLineSegment, roomId])
 
   const getCoordinates = (e) => {
