@@ -101,10 +101,30 @@ io.on('connection', (socket) => {
     socket.leave(roomId)
     console.log(`User ${socket.id} left room ${roomId}`)
     delete rooms[roomId].userNames[socket.id]
+    
+    cleanUpRoom(roomId)
   })
+
+  // Helper function to clean up a room if it is empty
+  function cleanUpRoom(roomId) {
+    const room = rooms[roomId]
+    if (Object.keys(room.userNames).length === 0) {
+      delete rooms[roomId]
+      console.log(`Room ${roomId} cleaned up`)
+    }
+  } 
 
   socket.on('disconnect', () => {
     console.log('User disconnected:', socket.id)
+    
+    // Clean up all rooms this socket was in
+    for (const roomId in rooms) {
+      if (rooms[roomId].userNames[socket.id]) {
+        delete rooms[roomId].userNames[socket.id]
+        
+        cleanUpRoom(roomId)
+      }
+    }
   })
 })
 
