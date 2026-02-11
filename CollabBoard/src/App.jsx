@@ -14,14 +14,29 @@ const COLORS = [
   { name: 'Pink', value: '#f72585' },
 ]
 
+const TOOLS = {
+  BRUSH: 'brush',
+  LINE: 'line',
+  RECTANGLE: 'rectangle',
+  ERASER: 'eraser'
+}
+
+const BACKGROUND_COLOR = '#0d1117'
+const ERASER_LINE_WIDTH = 15
+
 function App() {
   const canvasRef = useRef(null)
   const [isDrawing, setIsDrawing] = useState(false)
   const [currentColor, setCurrentColor] = useState(COLORS[0].value)
   const [lineWidth, setLineWidth] = useState(3)
+  const [currentTool, setCurrentTool] = useState(TOOLS.BRUSH)
   const lastPointRef = useRef(null)
   const drawingManager = useRef(null)
   const currentDrawingRecordId = useRef(null)
+  // Track start point for line/rectangle tools
+  const startPointRef = useRef(null)
+  // Track preview end point for line/rectangle tools
+  const previewEndPointRef = useRef(null)
   // Track last points for remote drawings
   const remoteLastPoints = useRef({})
   // Track active remote drawers with their name and position
@@ -40,6 +55,8 @@ function App() {
   const [isPanning, setIsPanning] = useState(false)
   const [isSpacePressed, setIsSpacePressed] = useState(false)
   const panStartRef = useRef(null)
+  // Track pending redraw for batching
+  const pendingRedrawRef = useRef(null)
 
   if (drawingManager.current === null) {
     drawingManager.current = new DrawingManager()
@@ -65,52 +82,61 @@ function App() {
     const records = drawingManager.current.getDrawingRecords()
     
     for (const id in records) {
-      const stroke = records[id]
-      const points = stroke.points
+      const record = records[id]
+      const points = record.points
+      const type = record.type || 'stroke'
       
-      if (points.length < 2) continue
+      if (points.length === 0) continue
       
-      ctx.strokeStyle = stroke.color
-      ctx.lineWidth = stroke.size
+      const drawColor = type === TOOLS.ERASER ? BACKGROUND_COLOR : record.color
+      
+      ctx.strokeStyle = drawColor
+      ctx.lineWidth = record.size
       ctx.lineCap = 'round'
       ctx.lineJoin = 'round'
       
-      for (let i = 1; i < points.length; i++) {
+      if (type === TOOLS.LINE && points.length >= 2) {
+        // Draw single line from first to second point
         ctx.beginPath()
-        ctx.moveTo(points[i - 1].x, points[i - 1].y)
-        ctx.lineTo(points[i].x, points[i].y)
+        ctx.moveTo(points[0].x, points[0].y)
+        ctx.lineTo(points[1].x, points[1].y)
         ctx.stroke()
+      } else if (type === TOOLS.RECTANGLE && points.length >= 2) {
+        // Draw rectangle from first point (top-left) to second point (bottom-right)
+        const start = points[0]
+        const end = points[1]
+        const width = end.x - start.x
+        const height = end.y - start.y
+        ctx.beginPath()
+        ctx.rect(start.x, start.y, width, height)
+        ctx.stroke()
+      } else if (type === 'stroke' || type === TOOLS.ERASER || type === TOOLS.BRUSH) {
+        // Draw continuous path for brush/eraser
+        if (points.length < 2) continue
+        for (let i = 1; i < points.length; i++) {
+          ctx.beginPath()
+          ctx.moveTo(points[i - 1].x, points[i - 1].y)
+          ctx.lineTo(points[i].x, points[i].y)
+          ctx.stroke()
+        }
       }
     }
     
     ctx.restore()
   }, [zoom, panX, panY])
 
-  // Used for drawing remote changes in real time
-  const drawLineSegment = useCallback((fromPoint, toPoint, color, size) => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-    const ctx = canvas.getContext('2d')
-    
-    // Apply transformations
-    ctx.save()
-    ctx.translate(panX, panY)
-    ctx.scale(zoom, zoom)
-    
-    ctx.strokeStyle = color
-    ctx.lineWidth = size
-    ctx.lineCap = 'round'
-    ctx.lineJoin = 'round'
-    
-    ctx.beginPath()
-    ctx.moveTo(fromPoint.x, fromPoint.y)
-    ctx.lineTo(toPoint.x, toPoint.y)
-    ctx.stroke()
-    
-    ctx.restore()
-  }, [zoom, panX, panY])
+  // Batched redraw for performance - batches multiple redraw requests into one
+  const batchedRedraw = useCallback(() => {
+    if (pendingRedrawRef.current) {
+      cancelAnimationFrame(pendingRedrawRef.current)
+    }
+    pendingRedrawRef.current = requestAnimationFrame(() => {
+      redrawCanvas()
+      pendingRedrawRef.current = null
+    })
+  }, [redrawCanvas])
 
-useEffect(() => {
+  useEffect(() => {
   if (!roomId) return;
 
   const resizeCanvas = () => {
@@ -205,13 +231,28 @@ useEffect(() => {
       const { id, point, userName } = data
       const record = drawingManager.current.getDrawingRecord(id)
       if (record) {
-        drawingManager.current.AddPointToRecord(id, point)
-        
-        // Draw the line segment in real-time
         const lastPoint = remoteLastPoints.current[id]
-        if (lastPoint) {
-          drawLineSegment(lastPoint, point, record.color, record.size)
+        
+        if (record.type === TOOLS.LINE || record.type === TOOLS.RECTANGLE) {
+          if (record.points.length === 0) {
+            // First point (start of line/rectangle)
+            drawingManager.current.AddPointToRecord(id, point)
+          } else {
+            // Second point (end of line/rectangle) - replace if already exists
+            if (record.points.length === 1) {
+              drawingManager.current.AddPointToRecord(id, point)
+            } else {
+              // Replace the end point (if it works don't touch it)
+              record.points = [record.points[0], point]
+            }
+          }
+          redrawCanvas()
+        } 
+        else {
+          drawingManager.current.AddPointToRecord(id, point)
+          batchedRedraw()
         }
+        
         remoteLastPoints.current[id] = point
         
         // Update drawer position
@@ -256,7 +297,7 @@ useEffect(() => {
       drawingManager.current.createDrawingRecordWithPoints(id, type, color, size, points)
       redrawCanvas()
     })
-  }, [redrawCanvas, drawLineSegment, roomId])
+  }, [redrawCanvas, batchedRedraw, roomId])
 
   const getCoordinates = (e) => {
     const canvas = canvasRef.current
@@ -284,25 +325,54 @@ useEffect(() => {
   const startDrawing = (e) => {
     e.preventDefault()
     
-    // Don't start drawing if space is pressed (pan mode)
+    // Pan mode
     if (isSpacePressed) {
       return
     }
     
     currentDrawingRecordId.current = Date.now()
     const coords = getCoordinates(e)
-    lastPointRef.current = coords
-
+    
+    // Determine tool type and color
+    let toolType = 'stroke'
+    let drawColor = currentColor
+    
+    if (currentTool === TOOLS.BRUSH) {
+      toolType = 'stroke'
+      drawColor = currentColor
+    } else if (currentTool === TOOLS.LINE) {
+      toolType = 'line'
+      drawColor = currentColor
+      startPointRef.current = coords
+      previewEndPointRef.current = null
+    } else if (currentTool === TOOLS.RECTANGLE) {
+      toolType = 'rectangle'
+      drawColor = currentColor
+      startPointRef.current = coords
+      previewEndPointRef.current = null
+    } else if (currentTool === TOOLS.ERASER) {
+      toolType = 'eraser'
+      drawColor = BACKGROUND_COLOR
+    }
+    const MylineWidth = toolType === TOOLS.ERASER ? ERASER_LINE_WIDTH : lineWidth
+    
+    // Create drawing record for all tools
     drawingManager.current.CreateNewDrawingRecord(
       currentDrawingRecordId.current,
-      'stroke',
-      currentColor,
-      lineWidth
+      toolType,
+      drawColor,
+      MylineWidth
     )
     drawingManager.current.AddPointToRecord(currentDrawingRecordId.current, coords)
-
-    socketManager.emitDrawingStart(currentDrawingRecordId.current, 'stroke', currentColor, lineWidth, roomId)
+    
+    // Emit socket events
+    socketManager.emitDrawingStart(currentDrawingRecordId.current, toolType, drawColor, MylineWidth, roomId)
     socketManager.emitDrawingPoint(currentDrawingRecordId.current, coords, roomId)
+    
+    // For brush and eraser, start collecting points immediately
+    if (currentTool === TOOLS.BRUSH || currentTool === TOOLS.ERASER) {
+      lastPointRef.current = coords
+    }
 
     setIsDrawing(true)
   }
@@ -364,42 +434,91 @@ useEffect(() => {
     e.preventDefault()
     
     const canvas = canvasRef.current
+    if (!canvas) return
     const ctx = canvas.getContext('2d')
     const coords = getCoordinates(e)
     
-    // Apply transformations for drawing
-    ctx.save()
-    ctx.translate(panX, panY)
-    ctx.scale(zoom, zoom)
-    
-    ctx.strokeStyle = currentColor
-    ctx.lineWidth = lineWidth
-    ctx.lineCap = 'round'
-    ctx.lineJoin = 'round'
-    
-    ctx.beginPath()
-    ctx.moveTo(lastPointRef.current.x, lastPointRef.current.y)
-    ctx.lineTo(coords.x, coords.y)
-    ctx.stroke()
-    
-    ctx.restore()
+    // Handle brush and eraser (continuous drawing)
+    if (currentTool === TOOLS.BRUSH || currentTool === TOOLS.ERASER) {
+      if (!lastPointRef.current) return
+      
+      // Apply transformations for drawing
+      ctx.save()
+      ctx.translate(panX, panY)
+      ctx.scale(zoom, zoom)
+      
+      const drawColor = currentTool === TOOLS.ERASER ? BACKGROUND_COLOR : currentColor
+      ctx.strokeStyle = drawColor
+      ctx.lineWidth = currentTool === TOOLS.ERASER ? ERASER_LINE_WIDTH : lineWidth
+      ctx.lineCap = 'round'
+      ctx.lineJoin = 'round'
+      
+      ctx.beginPath()
+      ctx.moveTo(lastPointRef.current.x, lastPointRef.current.y)
+      ctx.lineTo(coords.x, coords.y)
+      ctx.stroke()
+      
+      ctx.restore()
 
-    drawingManager.current.AddPointToRecord(currentDrawingRecordId.current, coords)
-    
-    socketManager.emitDrawingPoint(currentDrawingRecordId.current, coords, roomId)
-    
-    lastPointRef.current = coords
+      drawingManager.current.AddPointToRecord(currentDrawingRecordId.current, coords)
+      socketManager.emitDrawingPoint(currentDrawingRecordId.current, coords, roomId)
+      lastPointRef.current = coords
+    } 
+    // Handle line and rectangle (preview while dragging)
+    else if (currentTool === TOOLS.LINE || currentTool === TOOLS.RECTANGLE) {
+      if (!startPointRef.current) return
+      
+      previewEndPointRef.current = coords
+      
+      redrawCanvas()
+      
+      // Draw
+      ctx.save()
+      ctx.translate(panX, panY)
+      ctx.scale(zoom, zoom)
+      
+      ctx.strokeStyle = currentColor
+      ctx.lineWidth = lineWidth
+      ctx.lineCap = 'round'
+      ctx.lineJoin = 'round'
+      
+      if (currentTool === TOOLS.LINE) {
+        ctx.beginPath()
+        ctx.moveTo(startPointRef.current.x, startPointRef.current.y)
+        ctx.lineTo(coords.x, coords.y)
+        ctx.stroke()
+      } else if (currentTool === TOOLS.RECTANGLE) {
+        const width = coords.x - startPointRef.current.x
+        const height = coords.y - startPointRef.current.y
+        ctx.beginPath()
+        ctx.rect(startPointRef.current.x, startPointRef.current.y, width, height)
+        ctx.stroke()
+      }
+      
+      ctx.restore()
+    }
   }
 
   const stopDrawing = (e) => {
     if (isDrawing && currentDrawingRecordId.current) {
+      // For line and rectangle, finalize with end point
+      if (currentTool === TOOLS.LINE || currentTool === TOOLS.RECTANGLE) {
+        if (previewEndPointRef.current) {
+          drawingManager.current.AddPointToRecord(currentDrawingRecordId.current, previewEndPointRef.current)
+          socketManager.emitDrawingPoint(currentDrawingRecordId.current, previewEndPointRef.current, roomId)
+        }
+      }
+      
       socketManager.emitDrawingEnd(currentDrawingRecordId.current, roomId)
       drawingManager.current.AddDrawingRecordToHistory(currentDrawingRecordId.current)
       updateUndoRedoState()
+      redrawCanvas()
     }
     console.log(drawingManager.current.getDrawingRecords())
     setIsDrawing(false)
     lastPointRef.current = null
+    startPointRef.current = null
+    previewEndPointRef.current = null
     
     // Also stop panning
     if (isPanning) {
@@ -571,74 +690,158 @@ useEffect(() => {
 
   return (
     <div className="app">
-      <div className="toolbar">
-        <div className="toolbar-section">
-          <button className="action-btn back-btn" onClick={handleLeaveRoom}>
-            ← Exit
-          </button>
-          <div className="room-info">
-            <span className="toolbar-label">Room</span>
-            <span className="room-name">{roomId}</span>
-          </div>
-        </div>
-
-        <div className="toolbar-section">
-          <span className="toolbar-label">Colors</span>
-          <div className="color-picker">
-            {COLORS.map((color) => (
-              <button
-                key={color.value}
-                className={`color-btn ${currentColor === color.value ? 'active' : ''}`}
-                style={{ backgroundColor: color.value }}
-                onClick={() => setCurrentColor(color.value)}
-                title={color.name}
-              />
-            ))}
-          </div>
-        </div>
-        
-        <div className="toolbar-section">
-          <span className="toolbar-label">Size: {lineWidth}px</span>
-          <input
-            type="range"
-            min="1"
-            max="20"
-            value={lineWidth}
-            onChange={(e) => setLineWidth(Number(e.target.value))}
-            className="size-slider"
-          />
-        </div>
-        
-        <div className="toolbar-section">
-          <button 
-            className="action-btn" 
-            onClick={handleUndo}
-            disabled={!canUndo}
-            title="Undo (Ctrl+Z)"
+      <div className="left-toolbar">
+        <div className="toolbar-label">Tools</div>
+        <div className="tool-buttons">
+          <button
+            className={`tool-btn ${currentTool === TOOLS.BRUSH ? 'active' : ''}`}
+            onClick={() => {
+              // Cancel current drawing if switching tools
+              if (isDrawing) {
+                setIsDrawing(false)
+                lastPointRef.current = null
+                startPointRef.current = null
+                previewEndPointRef.current = null
+                if (currentDrawingRecordId.current) {
+                  drawingManager.current.deleteDrawingRecord(currentDrawingRecordId.current)
+                  redrawCanvas()
+                }
+              }
+              setCurrentTool(TOOLS.BRUSH)
+            }}
+            title="Brush"
           >
-            ↶ Undo
+            🖌️
           </button>
-          <button 
-            className="action-btn" 
-            onClick={handleRedo}
-            disabled={!canRedo}
-            title="Redo (Ctrl+Y)"
+          <button
+            className={`tool-btn ${currentTool === TOOLS.LINE ? 'active' : ''}`}
+            onClick={() => {
+              if (isDrawing) {
+                setIsDrawing(false)
+                lastPointRef.current = null
+                startPointRef.current = null
+                previewEndPointRef.current = null
+                if (currentDrawingRecordId.current) {
+                  drawingManager.current.deleteDrawingRecord(currentDrawingRecordId.current)
+                  redrawCanvas()
+                }
+              }
+              setCurrentTool(TOOLS.LINE)
+            }}
+            title="Line"
           >
-            ↷ Redo
+            📏
           </button>
-        </div>
-        
-        <button className="clear-btn" onClick={clearCanvas}>
-          Clear Canvas
-        </button>
-        
-        <div className={`connection-status ${isConnected ? 'connected' : 'disconnected'}`}>
-          <span className="status-dot"></span>
-          <span className="status-text">{isConnected ? 'Connected' : 'Disconnected'}</span>
+          <button
+            className={`tool-btn ${currentTool === TOOLS.RECTANGLE ? 'active' : ''}`}
+            onClick={() => {
+              if (isDrawing) {
+                setIsDrawing(false)
+                lastPointRef.current = null
+                startPointRef.current = null
+                previewEndPointRef.current = null
+                if (currentDrawingRecordId.current) {
+                  drawingManager.current.deleteDrawingRecord(currentDrawingRecordId.current)
+                  redrawCanvas()
+                }
+              }
+              setCurrentTool(TOOLS.RECTANGLE)
+            }}
+            title="Rectangle"
+          >
+            ▭
+          </button>
+          <button
+            className={`tool-btn ${currentTool === TOOLS.ERASER ? 'active' : ''}`}
+            onClick={() => {
+              if (isDrawing) {
+                setIsDrawing(false)
+                lastPointRef.current = null
+                startPointRef.current = null
+                previewEndPointRef.current = null
+                if (currentDrawingRecordId.current) {
+                  drawingManager.current.deleteDrawingRecord(currentDrawingRecordId.current)
+                  redrawCanvas()
+                }
+              }
+              setCurrentTool(TOOLS.ERASER)
+            }}
+            title="Eraser"
+          >
+            🧹
+          </button>
         </div>
       </div>
       
-      <div className="canvas-container">
+      <div className="app-content">
+        <div className="toolbar">
+          <div className="toolbar-section">
+            <button className="action-btn back-btn" onClick={handleLeaveRoom}>
+              ← Exit
+            </button>
+            <div className="room-info">
+              <span className="toolbar-label">Room</span>
+              <span className="room-name">{roomId}</span>
+            </div>
+          </div>
+
+          <div className="toolbar-section">
+            <span className="toolbar-label">Colors</span>
+            <div className="color-picker">
+              {COLORS.map((color) => (
+                <button
+                  key={color.value}
+                  className={`color-btn ${currentColor === color.value ? 'active' : ''}`}
+                  style={{ backgroundColor: color.value }}
+                  onClick={() => setCurrentColor(color.value)}
+                  title={color.name}
+                />
+              ))}
+            </div>
+          </div>
+          
+          <div className="toolbar-section">
+            <span className="toolbar-label">Size: {lineWidth}px</span>
+            <input
+              type="range"
+              min="1"
+              max="20"
+              value={lineWidth}
+              onChange={(e) => setLineWidth(Number(e.target.value))}
+              className="size-slider"
+            />
+          </div>
+          
+          <div className="toolbar-section">
+            <button 
+              className="action-btn" 
+              onClick={handleUndo}
+              disabled={!canUndo}
+              title="Undo (Ctrl+Z)"
+            >
+              ↶ Undo
+            </button>
+            <button 
+              className="action-btn" 
+              onClick={handleRedo}
+              disabled={!canRedo}
+              title="Redo (Ctrl+Y)"
+            >
+              ↷ Redo
+            </button>
+          </div>
+          
+          <button className="clear-btn" onClick={clearCanvas}>
+            Clear Canvas
+          </button>
+          
+          <div className={`connection-status ${isConnected ? 'connected' : 'disconnected'}`}>
+            <span className="status-dot"></span>
+            <span className="status-text">{isConnected ? 'Connected' : 'Disconnected'}</span>
+          </div>
+        </div>
+        
+        <div className="canvas-container">
         <canvas
           ref={canvasRef}
           onMouseDown={(e) => {
@@ -655,7 +858,13 @@ useEffect(() => {
           onTouchStart={startDrawing}
           onTouchMove={draw}
           onTouchEnd={stopDrawing}
-          style={{ cursor: isSpacePressed ? (isPanning ? 'grabbing' : 'grab') : 'crosshair' }}
+          style={{ 
+            cursor: isSpacePressed 
+              ? (isPanning ? 'grabbing' : 'grab') 
+              : currentTool === TOOLS.ERASER 
+                ? 'grab' 
+                : 'crosshair' 
+          }}
         />
         
         {Object.entries(activeDrawers).map(([id, drawer]) => 
@@ -673,6 +882,7 @@ useEffect(() => {
             </div>
           )
         )}
+        </div>
       </div>
     </div>
   )
