@@ -18,11 +18,13 @@ const TOOLS = {
   BRUSH: 'brush',
   LINE: 'line',
   RECTANGLE: 'rectangle',
-  ERASER: 'eraser'
+  ERASER: 'eraser',
+  TEXT: 'text'
 }
 
 const BACKGROUND_COLOR = '#0d1117'
 const ERASER_LINE_WIDTH = 15
+const DEFAULT_TEXT_SIZE = 16
 
 function App() {
   const canvasRef = useRef(null)
@@ -57,6 +59,9 @@ function App() {
   const panStartRef = useRef(null)
   // Track pending redraw for batching
   const pendingRedrawRef = useRef(null)
+  // Text input state
+  const [textInput, setTextInput] = useState({ visible: false, x: 0, y: 0, id: null, canvasX: 0, canvasY: 0 })
+  const textInputRef = useRef(null)
 
   if (drawingManager.current === null) {
     drawingManager.current = new DrawingManager()
@@ -71,8 +76,9 @@ function App() {
     const { width, height } = container.getBoundingClientRect();
 
     
-    // Clear the canvas first
-    ctx.clearRect(0, 0, width, height)
+    // Clear and fill canvas with background color
+    ctx.fillStyle = BACKGROUND_COLOR
+    ctx.fillRect(0, 0, width, height)
     
     // Apply transformations
     ctx.save()
@@ -83,9 +89,18 @@ function App() {
     
     for (const id in records) {
       const record = records[id]
-      const points = record.points
       const type = record.type || 'stroke'
       
+      if (type === 'text') {
+        if (!record.text) continue
+        ctx.fillStyle = record.color
+        ctx.font = `${record.size || DEFAULT_TEXT_SIZE}px 'Space Mono', monospace`
+        ctx.textBaseline = 'top'
+        ctx.fillText(record.text, record.x, record.y)
+        continue
+      }
+      
+      const points = record.points || []
       if (points.length === 0) continue
       
       const drawColor = type === TOOLS.ERASER ? BACKGROUND_COLOR : record.color
@@ -200,16 +215,25 @@ function App() {
   useEffect(() => {
     if (!roomId) return
 
-    // Sync existing drawings when joining
     socketManager.onSyncDrawings((records) => {
       drawingManager.current.clearDrawingRecords()
       for (const id in records) {
         const record = records[id]
-        drawingManager.current.CreateNewDrawingRecord(id, record.type, record.color, record.size)
-        record.points.forEach(point => {
-          drawingManager.current.AddPointToRecord(id, point)
-        })
+        if (record.type === 'text') {
+          drawingManager.current.createTextRecordWithData(id, record.text, record.x, record.y, record.color, record.size)
+        } else {
+          drawingManager.current.CreateNewDrawingRecord(id, record.type, record.color, record.size)
+          ;(record.points || []).forEach(point => {
+            drawingManager.current.AddPointToRecord(id, point)
+          })
+        }
       }
+      redrawCanvas()
+    })
+
+    socketManager.onText((data) => {
+      const { id, text, x, y, color, size } = data
+      drawingManager.current.createTextRecordWithData(id, text, x, y, color, size)
       redrawCanvas()
     })
 
@@ -325,8 +349,25 @@ function App() {
   const startDrawing = (e) => {
     e.preventDefault()
     
-    // Pan mode
-    if (isSpacePressed) {
+    if (isSpacePressed) return
+
+    if (currentTool === TOOLS.TEXT) {
+      if (textInput.visible) return
+      const canvas = canvasRef.current
+      const rect = canvas.getBoundingClientRect()
+      let screenX, screenY
+      if (e.touches) {
+        screenX = e.touches[0].clientX - rect.left
+        screenY = e.touches[0].clientY - rect.top
+      } else {
+        screenX = e.clientX - rect.left
+        screenY = e.clientY - rect.top
+      }
+      const canvasX = (screenX - panX) / zoom
+      const canvasY = (screenY - panY) / zoom
+      const textId = Date.now()
+      setTextInput({ visible: true, x: screenX, y: screenY, id: textId, canvasX, canvasY })
+      setTimeout(() => textInputRef.current?.focus(), 0)
       return
     }
     
@@ -554,6 +595,23 @@ function App() {
     setCanRedo(drawingManager.current.canRedo())
   }
 
+  const finalizeText = useCallback((textValue) => {
+    if (!textInput.visible || !textInput.id || !textValue?.trim()) {
+      setTextInput({ visible: false, x: 0, y: 0, id: null, canvasX: 0, canvasY: 0 })
+      return
+    }
+    const textId = textInput.id
+    const canvasX = textInput.canvasX
+    const canvasY = textInput.canvasY
+    const trimmed = String(textValue).trim()
+    drawingManager.current.CreateTextRecord(textId, trimmed, canvasX, canvasY, currentColor, DEFAULT_TEXT_SIZE)
+    socketManager.emitText(textId, trimmed, canvasX, canvasY, currentColor, DEFAULT_TEXT_SIZE, roomId)
+    drawingManager.current.AddDrawingRecordToHistory(textId)
+    updateUndoRedoState()
+    setTextInput({ visible: false, x: 0, y: 0, id: null, canvasX: 0, canvasY: 0 })
+    redrawCanvas()
+  }, [textInput, currentColor, roomId, redrawCanvas])
+
 const handleUndo = useCallback(() => {
   const undoneRecord = drawingManager.current.UndoLastDrawingRecord();
   if (undoneRecord) {
@@ -566,14 +624,26 @@ const handleUndo = useCallback(() => {
 const handleRedo = useCallback(() => {
   const redoneRecord = drawingManager.current.RedoLastDrawingRecord();
   if (redoneRecord) {
-    socketManager.emitRedo(
-      redoneRecord.id,
-      redoneRecord.type,
-      redoneRecord.color,
-      redoneRecord.size,
-      redoneRecord.points,
-      roomId
-    );
+    if (redoneRecord.type === 'text') {
+      socketManager.emitText(
+        redoneRecord.id,
+        redoneRecord.text,
+        redoneRecord.x,
+        redoneRecord.y,
+        redoneRecord.color,
+        redoneRecord.size,
+        roomId
+      );
+    } else {
+      socketManager.emitRedo(
+        redoneRecord.id,
+        redoneRecord.type,
+        redoneRecord.color,
+        redoneRecord.size,
+        redoneRecord.points,
+        roomId
+      );
+    }
   }
   updateUndoRedoState();
   redrawCanvas();
@@ -587,6 +657,17 @@ useEffect(() => {
 
 useEffect(() => {
   const handleKeyDown = (e) => {
+    if (e.target === textInputRef.current) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        finalizeText(textInputRef.current?.value);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        setTextInput({ visible: false, x: 0, y: 0, id: null, canvasX: 0, canvasY: 0 });
+      }
+      return;
+    }
+
     const { handleUndo, handleRedo } = latestHandlers.current;
     const isMod = e.ctrlKey || e.metaKey;
 
@@ -600,7 +681,6 @@ useEffect(() => {
       if (drawingManager.current.canRedo()) handleRedo();
     }
     
-    // Handle space key for panning
     if (e.key === ' ') {
       e.preventDefault();
       setIsSpacePressed(true);
@@ -621,12 +701,14 @@ useEffect(() => {
     window.removeEventListener('keydown', handleKeyDown);
     window.removeEventListener('keyup', handleKeyUp);
   };
-}, []);
+}, [textInput.visible, finalizeText]);
 
   const clearCanvas = () => {
     const canvas = canvasRef.current
     const ctx = canvas.getContext('2d')
-    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    // Fill canvas with background color instead of just clearing
+    ctx.fillStyle = BACKGROUND_COLOR
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
     drawingManager.current.clearDrawingRecords()
     updateUndoRedoState()
     
@@ -696,7 +778,6 @@ useEffect(() => {
           <button
             className={`tool-btn ${currentTool === TOOLS.BRUSH ? 'active' : ''}`}
             onClick={() => {
-              // Cancel current drawing if switching tools
               if (isDrawing) {
                 setIsDrawing(false)
                 lastPointRef.current = null
@@ -707,6 +788,7 @@ useEffect(() => {
                   redrawCanvas()
                 }
               }
+              if (textInput.visible) setTextInput({ visible: false, x: 0, y: 0, id: null, canvasX: 0, canvasY: 0 })
               setCurrentTool(TOOLS.BRUSH)
             }}
             title="Brush"
@@ -726,6 +808,7 @@ useEffect(() => {
                   redrawCanvas()
                 }
               }
+              if (textInput.visible) setTextInput({ visible: false, x: 0, y: 0, id: null, canvasX: 0, canvasY: 0 })
               setCurrentTool(TOOLS.LINE)
             }}
             title="Line"
@@ -745,6 +828,7 @@ useEffect(() => {
                   redrawCanvas()
                 }
               }
+              if (textInput.visible) setTextInput({ visible: false, x: 0, y: 0, id: null, canvasX: 0, canvasY: 0 })
               setCurrentTool(TOOLS.RECTANGLE)
             }}
             title="Rectangle"
@@ -764,11 +848,32 @@ useEffect(() => {
                   redrawCanvas()
                 }
               }
+              if (textInput.visible) setTextInput({ visible: false, x: 0, y: 0, id: null, canvasX: 0, canvasY: 0 })
               setCurrentTool(TOOLS.ERASER)
             }}
             title="Eraser"
           >
             🧹
+          </button>
+          <button
+            className={`tool-btn ${currentTool === TOOLS.TEXT ? 'active' : ''}`}
+            onClick={() => {
+              if (isDrawing) {
+                setIsDrawing(false)
+                lastPointRef.current = null
+                startPointRef.current = null
+                previewEndPointRef.current = null
+                if (currentDrawingRecordId.current) {
+                  drawingManager.current.deleteDrawingRecord(currentDrawingRecordId.current)
+                  redrawCanvas()
+                }
+              }
+              if (textInput.visible) setTextInput({ visible: false, x: 0, y: 0, id: null, canvasX: 0, canvasY: 0 })
+              setCurrentTool(TOOLS.TEXT)
+            }}
+            title="Text (click to place, Enter to confirm)"
+          >
+            📝
           </button>
         </div>
       </div>
@@ -842,6 +947,34 @@ useEffect(() => {
         </div>
         
         <div className="canvas-container">
+        {textInput.visible && (
+          <input
+            ref={textInputRef}
+            type="text"
+            className="canvas-text-input"
+            style={{
+              left: textInput.x,
+              top: textInput.y,
+            }}
+            placeholder="Type here..."
+            onBlur={() => {
+              if (textInputRef.current?.value?.trim()) {
+                finalizeText(textInputRef.current.value)
+              } else {
+                setTextInput({ visible: false, x: 0, y: 0, id: null, canvasX: 0, canvasY: 0 })
+              }
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                finalizeText(e.target.value)
+              } else if (e.key === 'Escape') {
+                e.preventDefault()
+                setTextInput({ visible: false, x: 0, y: 0, id: null, canvasX: 0, canvasY: 0 })
+              }
+            }}
+          />
+        )}
         <canvas
           ref={canvasRef}
           onMouseDown={(e) => {
@@ -863,7 +996,9 @@ useEffect(() => {
               ? (isPanning ? 'grabbing' : 'grab') 
               : currentTool === TOOLS.ERASER 
                 ? 'grab' 
-                : 'crosshair' 
+                : currentTool === TOOLS.TEXT 
+                  ? 'text' 
+                  : 'crosshair' 
           }}
         />
         

@@ -96,6 +96,12 @@ class SocketManager {
     }
   }
 
+  emitText(id, text, x, y, color, size, roomId) {
+    if (this.socket) {
+      this.socket.emit('text', { id, text, x, y, color, size, roomId })
+    }
+  }
+
   // Listen for drawing events from other users
   onDrawingStart(callback) {
     if (this.socket) {
@@ -137,6 +143,12 @@ class SocketManager {
   onSyncDrawings(callback) {
     if (this.socket) {
       this.socket.on('sync-drawings', callback)
+    }
+  }
+
+  onText(callback) {
+    if (this.socket) {
+      this.socket.on('text', callback)
     }
   }
 

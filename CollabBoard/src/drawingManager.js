@@ -26,6 +26,28 @@ class DrawingManager {
         };
     }
 
+    CreateTextRecord(id, text, x, y, color, size) {
+        this.drawingRecords[id] = {
+            type: 'text',
+            text: text,
+            x: x,
+            y: y,
+            color: color,
+            size: size,
+        };
+    }
+
+    createTextRecordWithData(id, text, x, y, color, size) {
+        this.drawingRecords[id] = {
+            type: 'text',
+            text: text,
+            x: x,
+            y: y,
+            color: color,
+            size: size,
+        };
+    }
+
     AddDrawingRecordToHistory(id) {
         this.undoneDrawingRecordsHistory = [];
         
@@ -49,13 +71,10 @@ class DrawingManager {
     UndoLastDrawingRecord() {
         if (this.drawingRecordsHistory.length > 0) {
             const id = this.drawingRecordsHistory.pop();
-            const record = {
-                id: id,
-                type: this.drawingRecords[id].type,
-                color: this.drawingRecords[id].color,
-                size: this.drawingRecords[id].size,
-                points: this.drawingRecords[id].points,
-            };
+            const r = this.drawingRecords[id];
+            const record = r.type === 'text'
+                ? { id, type: r.type, text: r.text, x: r.x, y: r.y, color: r.color, size: r.size }
+                : { id, type: r.type, color: r.color, size: r.size, points: r.points };
             this.undoneDrawingRecordsHistory.push(record);
             delete this.drawingRecords[id];
             return record;
@@ -66,14 +85,25 @@ class DrawingManager {
     RedoLastDrawingRecord() {
         if (this.undoneDrawingRecordsHistory.length > 0) {
             const record = this.undoneDrawingRecordsHistory.pop();
-            this.drawingRecords[record.id] = {
-                type: record.type,
-                color: record.color,
-                size: record.size,
-                points: record.points,
-            };
+            if (record.type === 'text') {
+                this.drawingRecords[record.id] = {
+                    type: 'text',
+                    text: record.text,
+                    x: record.x,
+                    y: record.y,
+                    color: record.color,
+                    size: record.size,
+                };
+            } else {
+                this.drawingRecords[record.id] = {
+                    type: record.type,
+                    color: record.color,
+                    size: record.size,
+                    points: record.points,
+                };
+            }
             this.drawingRecordsHistory.push(record.id);
-            return record; // Return the redone record for socket emit
+            return record;
         }
         return null;
     }

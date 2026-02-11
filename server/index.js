@@ -70,6 +70,13 @@ io.on('connection', (socket) => {
     socket.to(roomId).emit('redo', { ...data, userName: rooms[roomId].userNames[socket.id] })
   })
 
+  // User added text
+  socket.on('text', (data) => {
+    const { id, text, x, y, color, size, roomId } = data
+    rooms[roomId].allDrawingRecords[id] = { type: 'text', text, x, y, color, size }
+    socket.to(roomId).emit('text', { ...data, userName: rooms[roomId].userNames[socket.id] })
+  })
+
   // User cleared the canvas
   socket.on('clear-canvas', (data) => {
     const { roomId } = data

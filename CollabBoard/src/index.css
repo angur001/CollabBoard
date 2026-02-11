@@ -258,6 +258,30 @@ canvas.grabbing {
   cursor: grabbing;
 }
 
+.canvas-text-input {
+  position: absolute;
+  left: 0;
+  top: 0;
+  min-width: 120px;
+  padding: 4px 8px;
+  font-family: 'Space Mono', monospace;
+  font-size: 16px;
+  color: var(--text-primary);
+  background: var(--bg-toolbar);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  outline: none;
+  z-index: 20;
+}
+
+.canvas-text-input:focus {
+  box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.3);
+}
+
+.canvas-text-input::placeholder {
+  color: var(--text-secondary);
+}
+
 .drawer-label {
   position: absolute;
   padding: 4px 8px;
